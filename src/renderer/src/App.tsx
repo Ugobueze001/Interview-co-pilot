@@ -9,6 +9,7 @@ declare global {
     api?: {
       config?: {
         getOpenRouterKey: () => Promise<string>
+        getOpenRouterKeys: () => Promise<string[]>
         getDeepgramKey: () => Promise<string>
       }
       stealth: {
@@ -37,10 +38,12 @@ function App(): React.JSX.Element {
   const clickThrough = useAppStore((s) => s.clickThrough)
   const setClickThrough = useAppStore((s) => s.setClickThrough)
 
-  // Load saved API keys (gitignored files) once at startup
+  // Load saved API keys (gitignored files) once at startup.
+  // Keys from .env / openrouter.key become rate-limit fallbacks; a key typed
+  // in the onboarding form always takes priority (set by OnboardingForm).
   useEffect(() => {
-    window.api?.config?.getOpenRouterKey().then((key) => {
-      if (key) useAppStore.getState().setOpenRouterKey(key)
+    window.api?.config?.getOpenRouterKeys().then((keys) => {
+      if (keys.length) useAppStore.getState().setOpenRouterKeys(keys)
     })
   }, [])
 

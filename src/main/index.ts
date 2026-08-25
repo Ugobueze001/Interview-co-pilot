@@ -213,6 +213,21 @@ ipcMain.handle('config:get-openrouter-key', () => {
   }
 })
 
+// All distinct OpenRouter keys (.env first, then openrouter.key) so the
+// renderer can rotate between accounts when one hits its free-tier limit.
+ipcMain.handle('config:get-openrouter-keys', () => {
+  const keys: string[] = []
+  const envKey = process.env['OPENROUTER_API_KEY']
+  if (envKey && envKey.trim()) keys.push(envKey.trim())
+  try {
+    const fileKey = readFileSync(join(process.cwd(), 'openrouter.key'), 'utf-8').trim()
+    if (fileKey) keys.push(fileKey)
+  } catch {
+    // no key file
+  }
+  return Array.from(new Set(keys))
+})
+
 ipcMain.handle('config:get-deepgram-key', () => {
   if (process.env['DEEPGRAM_API_KEY']) return process.env['DEEPGRAM_API_KEY']
   try {

@@ -15,6 +15,7 @@ const api = {
   },
   config: {
     getOpenRouterKey: () => electron.ipcRenderer.invoke("config:get-openrouter-key"),
+    getOpenRouterKeys: () => electron.ipcRenderer.invoke("config:get-openrouter-keys"),
     getDeepgramKey: () => electron.ipcRenderer.invoke("config:get-deepgram-key")
   },
   stt: {

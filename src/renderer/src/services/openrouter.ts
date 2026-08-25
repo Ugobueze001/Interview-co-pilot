@@ -98,7 +98,10 @@ function retrieveContext(question: string, profile: CandidateProfile, topK = 4):
 }
 
 // ------------------------------------------------------------
-// SSE streaming
+// SSE streaming with multi-key rotation.
+// Key order: onboarding-form key first, then .env / openrouter.key keys.
+// If a key is invalid / out of credit / rate-limited (401/402/429) and
+// NOTHING has been streamed yet, the next key takes over automatically.
 // ------------------------------------------------------------
 
 export interface StreamCallbacks {
@@ -107,30 +110,35 @@ export interface StreamCallbacks {
   onError: (error: string) => void
 }
 
-export async function streamAnswer(
-  question: string,
+interface AttemptResult {
+  ok: boolean
+  status?: number
+  emittedChars: number
+  message?: string
+}
+
+/** Ordered, de-duplicated list of every configured OpenRouter key. */
+function getOrderedApiKeys(): string[] {
+  const store = useAppStore.getState()
+  return Array.from(
+    new Set(
+      [store.openRouterKey.trim(), ...store.openRouterKeys.map((k) => k.trim())].filter(Boolean)
+    )
+  )
+}
+
+/** Failures that justify silently rotating to the next API key. */
+function isRotatable(status?: number): boolean {
+  return status === 401 || status === 402 || status === 429 || (status !== undefined && status >= 500)
+}
+
+async function attemptStream(
+  apiKey: string,
+  userContent: string,
   callbacks: StreamCallbacks,
   signal?: AbortSignal
-): Promise<void> {
-  const store = useAppStore.getState()
-  const apiKey = store.openRouterKey
-  const profile = store.profile
-
-  if (!apiKey) {
-    callbacks.onError('No OpenRouter API key configured.')
-    return
-  }
-
-  const ragContext = profile ? retrieveContext(question, profile) : ''
-  const userContent = ragContext
-    ? `CONTEXT (retrieved from candidate data):
-${ragContext}
-
-INTERVIEWER'S QUESTION:
-${question}`
-    : `INTERVIEWER'S QUESTION:
-${question}`
-
+): Promise<AttemptResult> {
+  let emittedChars = 0
   try {
     const response = await fetch(OPENROUTER_URL, {
       method: 'POST',
@@ -155,12 +163,18 @@ ${question}`
 
     if (!response.ok || !response.body) {
       const errText = await response.text().catch(() => '')
-      if (response.status === 429) {
-        throw new Error(
-          'Free-model rate limit hit (429). Wait ~30s and try again — the fallback chain usually absorbs this.'
-        )
+      const hint =
+        response.status === 429
+          ? ' (free-model rate limit)'
+          : response.status === 402
+            ? ' (no credits on this account)'
+            : ''
+      return {
+        ok: false,
+        status: response.status,
+        emittedChars: 0,
+        message: `OpenRouter ${response.status}${hint}: ${errText.slice(0, 200)}`
       }
-      throw new Error(`OpenRouter ${response.status}: ${errText.slice(0, 300)}`)
     }
 
     const reader = response.body.getReader()
@@ -184,10 +198,16 @@ ${question}`
         try {
           const json = JSON.parse(payload) as {
             choices?: Array<{ delta?: { content?: string } }>
+            error?: { message?: string }
+          }
+          // Mid-stream provider errors arrive as SSE data with an error field
+          if (json.error?.message && !full) {
+            return { ok: false, status: 429, emittedChars: 0, message: json.error.message }
           }
           const token = json.choices?.[0]?.delta?.content
           if (token) {
             full += token
+            emittedChars += token.length
             callbacks.onToken(token)
           }
         } catch {
@@ -197,8 +217,60 @@ ${question}`
     }
 
     callbacks.onDone(full)
+    return { ok: true, emittedChars: full.length }
   } catch (err) {
-    if (signal?.aborted) return
-    callbacks.onError(err instanceof Error ? err.message : String(err))
+    if (signal?.aborted) return { ok: true, emittedChars }
+    return {
+      ok: false,
+      status: 0,
+      emittedChars,
+      message: err instanceof Error ? err.message : String(err)
+    }
   }
+}
+
+export async function streamAnswer(
+  question: string,
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal
+): Promise<void> {
+  const store = useAppStore.getState()
+  const profile = store.profile
+
+  const apiKeys = getOrderedApiKeys()
+  if (!apiKeys.length) {
+    callbacks.onError(
+      'No OpenRouter API key configured — enter one in onboarding or put it in .env / openrouter.key.'
+    )
+    return
+  }
+
+  const ragContext = profile ? retrieveContext(question, profile) : ''
+  const userContent = ragContext
+    ? `CONTEXT (retrieved from candidate data):
+${ragContext}
+
+INTERVIEWER'S QUESTION:
+${question}`
+    : `INTERVIEWER'S QUESTION:
+${question}`
+
+  let lastMessage = ''
+
+  for (let i = 0; i < apiKeys.length; i++) {
+    if (signal?.aborted) return
+    const result = await attemptStream(apiKeys[i], userContent, callbacks, signal)
+
+    if (result.ok || signal?.aborted) return
+
+    // Only rotate while nothing has been shown to the user yet — otherwise
+    // a mid-stream failure would restart the answer and duplicate text.
+    if (result.emittedChars > 0 || !isRotatable(result.status) || i === apiKeys.length - 1) {
+      callbacks.onError(result.message ?? 'Unknown OpenRouter error.')
+      return
+    }
+    lastMessage = result.message ?? lastMessage
+  }
+
+  callbacks.onError(`All ${apiKeys.length} OpenRouter keys failed. Last error: ${lastMessage}`)
 }

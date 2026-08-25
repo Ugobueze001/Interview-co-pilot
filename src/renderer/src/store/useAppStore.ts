@@ -23,6 +23,7 @@ interface AppState {
   phase: AppPhase
   profile: CandidateProfile | null
   openRouterKey: string
+  openRouterKeys: string[] // extra keys from .env / openrouter.key (rate-limit fallbacks)
   deepgramKey: string
 
   // Stealth mode
@@ -39,6 +40,7 @@ interface AppState {
   setPhase: (phase: AppPhase) => void
   saveProfile: (profile: CandidateProfile) => void
   setOpenRouterKey: (key: string) => void
+  setOpenRouterKeys: (keys: string[]) => void
   setDeepgramKey: (key: string) => void
   setClickThrough: (enabled: boolean) => void
   setContentProtected: (enabled: boolean) => void
@@ -54,6 +56,7 @@ export const useAppStore = create<AppState>((set) => ({
   phase: 'onboarding',
   profile: null,
   openRouterKey: '',
+  openRouterKeys: [],
   deepgramKey: '',
 
   clickThrough: false,
@@ -67,6 +70,7 @@ export const useAppStore = create<AppState>((set) => ({
   setPhase: (phase) => set({ phase }),
   saveProfile: (profile) => set({ profile, phase: 'live' }),
   setOpenRouterKey: (openRouterKey) => set({ openRouterKey }),
+  setOpenRouterKeys: (openRouterKeys) => set({ openRouterKeys }),
   setDeepgramKey: (deepgramKey) => set({ deepgramKey }),
   setClickThrough: (clickThrough) => set({ clickThrough }),
   setContentProtected: (contentProtected) => set({ contentProtected }),

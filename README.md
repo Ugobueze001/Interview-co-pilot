@@ -47,6 +47,8 @@ npm run dev
 
 ### OpenRouter API Key Configuration
 
+Uses **100% free models** (`minimax/minimax-m2.7:free` → `google/gemma-4-31b-it:free` → `nvidia/nemotron-3-super-120b-a12b:free`) — no credits required.
+
 Choose one of the following methods to provide your API key:
 
 **Option 1: Local File (Recommended)**
@@ -57,6 +59,15 @@ openrouter.key        # File contents: sk-or-v1-...
 
 **Option 2: Environment Variable**
 Set the `OPENROUTER_API_KEY` environment variable in your terminal.
+
+**Multi-Key Rate-Limit Fallback**
+Provide keys in *both* places (or enter one in the onboarding form) and the app
+uses them all: if one account hits its free-tier rate limit (HTTP 429), is
+invalid, or has no credits, the next key takes over automatically — mid-answer
+streaming is never duplicated. Priority order:
+1. Key typed in the onboarding form
+2. `OPENROUTER_API_KEY` from `.env`
+3. `openrouter.key` file
 
 ### Local Whisper.cpp (Optional — enables voice transcription)
 

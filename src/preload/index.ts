@@ -40,6 +40,7 @@ const api = {
   },
   config: {
     getOpenRouterKey: (): Promise<string> => ipcRenderer.invoke('config:get-openrouter-key'),
+    getOpenRouterKeys: (): Promise<string[]> => ipcRenderer.invoke('config:get-openrouter-keys'),
     getDeepgramKey: (): Promise<string> => ipcRenderer.invoke('config:get-deepgram-key')
   },
   stt: {
