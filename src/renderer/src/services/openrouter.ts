@@ -6,7 +6,24 @@ import { useAppStore, type CandidateProfile } from '../store/useAppStore'
  */
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
-const MODEL = 'openai/gpt-4o-mini' // fast + cheap default; any OpenRouter model works
+
+/**
+ * FREE models only - no credits required on OpenRouter.
+ *
+ * NOTE: meta-llama/*:free models were removed from OpenRouter's free tier
+ * (they now return 404 "unavailable for free"), so this chain uses the best
+ * currently-live free models instead - verified against the live catalog.
+ *
+ * The first entry is used as the default; OpenRouter automatically falls
+ * through the rest when one is rate-limited (:free tiers are throttled).
+ */
+export const MODEL_CHAIN = [
+  'minimax/minimax-m2.7:free', // verified working - strongest free generalist
+  'google/gemma-4-31b-it:free', // good quality; often recovers from 429
+  'nvidia/nemotron-3-super-120b-a12b:free' // fastest verified responder
+]
+
+const MODEL = MODEL_CHAIN[0]
 
 export const SYSTEM_PROMPT = `You are the ultimate interview assistant. Using the dynamically retrieved Resume and Job Description context, answer the interviewer's question perfectly. Format your response EXACTLY like this and be concise:
 1. Define First: [Clear, concise definition or direct answer to the question]
@@ -119,10 +136,14 @@ ${question}`
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        // Optional attribution headers OpenRouter recommends for apps
+        'HTTP-Referer': 'http://localhost/aiinterviewassistant',
+        'X-Title': 'AI Interview Assistant'
       },
       body: JSON.stringify({
         model: MODEL,
+        models: MODEL_CHAIN, // automatic fallback when a :free model is rate-limited
         stream: true,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
@@ -134,6 +155,11 @@ ${question}`
 
     if (!response.ok || !response.body) {
       const errText = await response.text().catch(() => '')
+      if (response.status === 429) {
+        throw new Error(
+          'Free-model rate limit hit (429). Wait ~30s and try again — the fallback chain usually absorbs this.'
+        )
+      }
       throw new Error(`OpenRouter ${response.status}: ${errText.slice(0, 300)}`)
     }
 
