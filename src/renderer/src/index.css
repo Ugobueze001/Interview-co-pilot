@@ -1,0 +1,35 @@
+@import 'tailwindcss';
+
+/* Custom scrollbar for the overlay aesthetic */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 3px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Frameless window: make the title bar draggable */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+
+/* Interactive elements must remain clickable inside the drag region */
+button,
+input,
+textarea,
+a {
+  -webkit-app-region: no-drag;
+}
