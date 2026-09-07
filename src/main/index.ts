@@ -141,10 +141,10 @@ app.whenReady().then(() => {
           callback({})
           return
         }
-        // 'loopback' captures all system audio (Windows only)
+        // 'loopback' captures system audio on Windows AND macOS 14.2+ (via CoreAudio Tap)
         callback({
           video: primary,
-          audio: process.platform === 'win32' ? ('loopback' as never) : undefined
+          audio: 'loopback' as never
         })
       })
     },

@@ -18,6 +18,10 @@ const api = {
     getOpenRouterKeys: () => electron.ipcRenderer.invoke("config:get-openrouter-keys"),
     getDeepgramKey: () => electron.ipcRenderer.invoke("config:get-deepgram-key")
   },
+  perm: {
+    getMicrophone: () => electron.ipcRenderer.invoke("perm:get-microphone"),
+    getScreen: () => electron.ipcRenderer.invoke("perm:get-screen")
+  },
   stt: {
     isAvailable: () => electron.ipcRenderer.invoke("stt:is-available"),
     transcribe: (wav) => electron.ipcRenderer.invoke("stt:transcribe", wav)

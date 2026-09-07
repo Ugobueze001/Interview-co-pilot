@@ -229,7 +229,7 @@ electron.app.whenReady().then(() => {
         }
         callback({
           video: primary,
-          audio: process.platform === "win32" ? "loopback" : void 0
+          audio: "loopback"
         });
       });
     },

@@ -43,6 +43,10 @@ const api = {
     getOpenRouterKeys: (): Promise<string[]> => ipcRenderer.invoke('config:get-openrouter-keys'),
     getDeepgramKey: (): Promise<string> => ipcRenderer.invoke('config:get-deepgram-key')
   },
+  perm: {
+    getMicrophone: (): Promise<string> => ipcRenderer.invoke('perm:get-microphone'),
+    getScreen: (): Promise<string> => ipcRenderer.invoke('perm:get-screen')
+  },
   stt: {
     isAvailable: (): Promise<boolean> => ipcRenderer.invoke('stt:is-available'),
     transcribe: (wav: ArrayBuffer): Promise<{ ok: boolean; text?: string; error?: string }> =>
