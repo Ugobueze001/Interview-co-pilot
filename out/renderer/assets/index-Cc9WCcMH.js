@@ -12767,12 +12767,13 @@ function float32ToInt16(float32) {
 }
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL_CHAIN = [
-  "google/gemini-2.0-flash-exp:free",
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "qwen/qwen-2.5-coder-32b-instruct:free",
-  "deepseek/deepseek-r1:free"
+  // Verified live on OpenRouter's public catalog (2026-09): all $0/1M tokens.
+  // `openrouter/free` is the wildcard routing fallback and stays last.
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "cohere/north-mini-code:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "openrouter/free"
 ];
-const AUTO_FALLBACK_MODELS = MODEL_CHAIN.slice(0, 3);
 const SYSTEM_PROMPT = `You are an elite live technical interview co-pilot. Respond instantly.
 STRUCTURE EVERY RESPONSE STRICTLY AS:
 1. **Define**: Concise 1-2 sentence core definition.
@@ -12795,23 +12796,30 @@ function recordTurn(question, answer) {
     conversationHistory.splice(0, conversationHistory.length - MAX_HISTORY_STORED);
   }
 }
+function estimateTokens(text) {
+  return Math.max(1, Math.ceil((text ?? "").length / 4));
+}
+const SYSTEM_TOKEN_BUDGET = 500;
 function buildSystemPrompt(profile) {
   if (!profile) return SYSTEM_PROMPT;
-  const ctx = [];
-  if (profile.fullName.trim()) ctx.push(`CANDIDATE: ${profile.fullName.trim()}`);
-  if (profile.jobTitle.trim()) ctx.push(`TARGET ROLE: ${profile.jobTitle.trim()}`);
-  if (profile.resume.trim()) {
-    ctx.push(`CANDIDATE RESUME CONTEXT:
-${profile.resume.trim().slice(0, 4e3)}`);
-  }
-  if (profile.jobDescription.trim()) {
-    ctx.push(`TARGET JOB DESCRIPTION:
-${profile.jobDescription.trim().slice(0, 2e3)}`);
-  }
-  if (profile.keySkills.length) ctx.push(`KEY SKILLS: ${profile.keySkills.join(", ")}`);
-  return ctx.length ? `${SYSTEM_PROMPT}
+  const parts = [];
+  let used = estimateTokens(SYSTEM_PROMPT);
+  const add = (label, value) => {
+    if (!value.trim()) return;
+    const cost = estimateTokens(label) + estimateTokens(value);
+    if (used + cost > SYSTEM_TOKEN_BUDGET) return;
+    parts.push(`${label}
+${value.trim()}`);
+    used += cost;
+  };
+  add("CANDIDATE", profile.fullName);
+  add("TARGET ROLE", profile.jobTitle);
+  add("CANDIDATE RESUME CONTEXT", profile.resume.slice(0, 2e3));
+  add("TARGET JOB DESCRIPTION", profile.jobDescription.slice(0, 1200));
+  add("KEY SKILLS", profile.keySkills.join(", "));
+  return parts.length ? `${SYSTEM_PROMPT}
 
-${ctx.join("\n\n")}` : SYSTEM_PROMPT;
+${parts.join("\n\n")}` : SYSTEM_PROMPT;
 }
 function buildRequestMessages(profile, ragContext, question) {
   const user = ragContext ? `CONTEXT (retrieved from candidate data):
@@ -12829,7 +12837,7 @@ ${question}`;
 function tokenize(text) {
   return text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((t) => t.length > 2);
 }
-function chunkText(text, size = 400) {
+function chunkText(text, size = 300) {
   const sentences = text.replace(/\s+/g, " ").split(/(?<=[.!?])\s+/);
   const chunks = [];
   let current = "";
@@ -12853,7 +12861,7 @@ function buildPassages(profile) {
     passages.unshift({ text: `Key skills: ${profile.keySkills.join(", ")}`, source: "resume" });
   return passages;
 }
-function retrieveContext(question, profile, topK = 4) {
+function retrieveContext(question, profile, topK = 3) {
   const passages = buildPassages(profile);
   if (!passages.length) return "";
   const qTokens = new Set(tokenize(question));
@@ -12867,7 +12875,7 @@ function retrieveContext(question, profile, topK = 4) {
   scored.sort((a, b) => b.score - a.score);
   const top = scored.slice(0, topK).filter((s) => s.score > 0);
   const sections = top.length === 0 ? passages.slice(0, topK) : top.map((s) => s.p);
-  return sections.map((p) => `[${p.source === "resume" ? "Resume" : "Job Description"}] ${p.text}`).join("\n\n");
+  return sections.map((p) => `[${p.source === "resume" ? "Resume" : "Job Description"}] ${p.text}`).join("\n\n").slice(0, 1200);
 }
 function getOrderedApiKeys() {
   const store = useAppStore.getState();
@@ -12880,7 +12888,160 @@ function getOrderedApiKeys() {
 function isRotatable(status) {
   return status === 401 || status === 402 || status === 429 || status !== void 0 && status >= 500;
 }
+const ttftTracker = {};
+const SLOW_TTFT_MS = 2500;
+let rankedModels = null;
+let discoveryPromise = null;
+const RANK_STORAGE_KEY = "interview-copilot.model-rank";
+function loadPersistedRank() {
+  try {
+    const raw = localStorage.getItem(RANK_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed.models) && Date.now() - (parsed.ts ?? 0) < 864e5) {
+      return parsed.models.filter((m) => typeof m === "string");
+    }
+  } catch {
+  }
+  return null;
+}
+function persistRank(models) {
+  try {
+    localStorage.setItem(RANK_STORAGE_KEY, JSON.stringify({ models, ts: Date.now() }));
+  } catch {
+  }
+}
+function recordTTFT(model, ttft) {
+  const prev = ttftTracker[model];
+  ttftTracker[model] = {
+    ttft,
+    failures: prev?.failures ?? 0,
+    degradedUntil: prev?.degradedUntil ?? 0
+  };
+  const base = rankedModels ?? loadPersistedRank() ?? MODEL_CHAIN;
+  rankedModels = [...base].sort((a, b) => {
+    const ea = ttftTracker[a];
+    const eb = ttftTracker[b];
+    return (ea?.ttft ?? Number.MAX_SAFE_INTEGER) - (eb?.ttft ?? Number.MAX_SAFE_INTEGER);
+  });
+  persistRank(rankedModels);
+}
+function markDegraded(model, reason) {
+  const prev = ttftTracker[model];
+  const failures = (prev?.failures ?? 0) + 1;
+  const backoff = Math.min(6e4, 5e3 * failures);
+  ttftTracker[model] = {
+    ttft: prev?.ttft ?? Number.MAX_SAFE_INTEGER,
+    failures,
+    degradedUntil: Date.now() + backoff
+  };
+  console.log(`[OpenRouter] model degraded (${reason}): ${model} (backoff ${backoff}ms)`);
+}
+function isDegraded(model) {
+  const e = ttftTracker[model];
+  return e !== void 0 && e.degradedUntil > Date.now();
+}
+function getCandidateModels() {
+  if (!rankedModels) rankedModels = loadPersistedRank() ?? [...MODEL_CHAIN];
+  return rankedModels.filter((m) => !isDegraded(m));
+}
+const DISCOVERY_URL = "https://openrouter.ai/api/v1/models";
+async function fetchFreeModelCatalog() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4e3);
+  try {
+    const res = await fetch(DISCOVERY_URL, { signal: controller.signal });
+    if (!res.ok) return [];
+    const body = await res.json();
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const m of body.data ?? []) {
+      const id = m.id;
+      if (!id.endsWith(":free")) continue;
+      if (id.split("/").length !== 2) continue;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function benchmarkModel(apiKey, model) {
+  const started = performance.now();
+  try {
+    const res = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        stream: true,
+        max_tokens: 8,
+        temperature: 0,
+        messages: [{ role: "user", content: "Hi" }]
+      }),
+      signal: AbortSignal.timeout(4e3)
+    });
+    if (!res.ok || !res.body) return null;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let firstMs = null;
+    while (firstMs === null) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes("data:")) firstMs = performance.now() - started;
+    }
+    try {
+      reader.cancel();
+    } catch {
+    }
+    return firstMs;
+  } catch {
+    return null;
+  }
+}
+function discoverAndBenchmarkModels() {
+  if (discoveryPromise) return discoveryPromise;
+  discoveryPromise = (async () => {
+    const keys = getOrderedApiKeys();
+    if (!keys.length) return getCandidateModels();
+    const catalog = await fetchFreeModelCatalog();
+    const fresh = [];
+    for (const model of catalog.slice(0, 8)) {
+      if (isDegraded(model)) continue;
+      const ttft = await benchmarkModel(keys[0], model);
+      if (ttft === null) {
+        markDegraded(model, "bench-failed");
+      } else if (ttft > SLOW_TTFT_MS) {
+        markDegraded(model, "slow-bench");
+      } else {
+        fresh.push({ model, ttft });
+      }
+    }
+    fresh.sort((a, b) => a.ttft - b.ttft);
+    const merged = [...fresh.map((f) => f.model)];
+    for (const m of MODEL_CHAIN) if (!merged.includes(m)) merged.push(m);
+    for (const m of getCandidateModels()) if (!merged.includes(m)) merged.push(m);
+    rankedModels = merged;
+    persistRank(rankedModels);
+    console.log(
+      `[OpenRouter] benchmark complete: ${fresh.map((f) => `${f.model.split("/")[1]}:${Math.round(f.ttft)}ms`).join(", ") || "no fast candidates"}`
+    );
+    return rankedModels;
+  })().catch(() => getCandidateModels());
+  return discoveryPromise;
+}
 async function attemptStream(apiKey, messages, model, callbacks, signal) {
+  const streamStarted = performance.now();
+  let ttftMs = null;
   let emittedChars = 0;
   try {
     const response = await fetch(OPENROUTER_URL, {
@@ -12894,9 +13055,11 @@ async function attemptStream(apiKey, messages, model, callbacks, signal) {
       },
       body: JSON.stringify({
         model,
-        models: AUTO_FALLBACK_MODELS,
+        models: getCandidateModels().slice(0, 3),
         // native auto-fallback (OpenRouter caps at 3)
         stream: true,
+        max_tokens: 350,
+        temperature: 0.2,
         messages
       }),
       signal
@@ -12935,6 +13098,7 @@ async function attemptStream(apiKey, messages, model, callbacks, signal) {
           if (token) {
             full += token;
             emittedChars += token.length;
+            if (ttftMs === null) ttftMs = performance.now() - streamStarted;
             callbacks.onToken(token);
           }
         } catch {
@@ -12942,7 +13106,12 @@ async function attemptStream(apiKey, messages, model, callbacks, signal) {
       }
     }
     callbacks.onDone(full);
-    return { ok: true, emittedChars: full.length, full };
+    return {
+      ok: true,
+      emittedChars: full.length,
+      full,
+      ttft: ttftMs ?? performance.now() - streamStarted
+    };
   } catch (err) {
     if (signal?.aborted) return { ok: true, emittedChars };
     return {
@@ -12963,23 +13132,29 @@ async function streamAnswer(question, callbacks, signal) {
     );
     return;
   }
+  void discoverAndBenchmarkModels();
   const ragContext = profile ? retrieveContext(question, profile) : "";
   const messages = buildRequestMessages(profile, ragContext, question);
   let lastMessage = "";
   const attempts = [];
+  const candidates = getCandidateModels();
   for (let i = 0; i < apiKeys.length; i++) {
     if (signal?.aborted) return;
-    for (const model of MODEL_CHAIN) {
+    for (const model of candidates) {
       if (signal?.aborted) return;
       const startedAt = performance.now();
       const result = await attemptStream(apiKeys[i], messages, model, callbacks, signal);
       if (result.ok) {
+        if (result.ttft !== void 0) recordTTFT(model, result.ttft);
+        if (result.ttft !== void 0 && result.ttft > SLOW_TTFT_MS) markDegraded(model, "slow-ttft");
         if (result.full?.trim()) recordTurn(question, result.full);
         return;
       }
       const elapsed = Math.round(performance.now() - startedAt);
       const shortModel = model.split("/")[1] ?? model;
       attempts.push(`key${i + 1}/${shortModel}:${result.status ?? "net"}:${elapsed}ms`);
+      if (result.status === 404) markDegraded(model, "removed");
+      else if (result.status === 429) markDegraded(model, "rate-limited");
       if (result.emittedChars > 0 || i === apiKeys.length - 1) {
         callbacks.onError(result.message ?? "Unknown OpenRouter error.");
         return;
@@ -12993,7 +13168,7 @@ async function streamAnswer(question, callbacks, signal) {
   }
   console.warn(`[OpenRouter] failover exhausted: ${attempts.join(" -> ")}`);
   callbacks.onError(
-    `All ${apiKeys.length} OpenRouter keys x ${MODEL_CHAIN.length} models failed. Last error: ${lastMessage}`
+    `All ${apiKeys.length} OpenRouter keys x ${candidates.length} models failed. Last error: ${lastMessage}`
   );
 }
 const SILENCE_COMMIT_MS = 1800;
