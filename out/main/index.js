@@ -167,16 +167,28 @@ if (!gotTheLock) {
 let mainWindow = null;
 let isClickThrough = false;
 function createWindow() {
+  const isMac = process.platform === "darwin";
   mainWindow = new electron.BrowserWindow({
     width: 480,
     height: 640,
     show: false,
     frame: false,
-    transparent: false,
+    transparent: isMac,
+    backgroundColor: isMac ? "#00000000" : void 0,
+    // macOS: NSPanel floats over fullscreen Spaces; normal window elsewhere.
+    // focusable MUST stay true so onboarding / Start Listening remain clickable.
+    type: isMac ? "panel" : void 0,
+    fullscreenable: !isMac,
+    hasShadow: !isMac,
     resizable: true,
+    movable: true,
+    minimizable: true,
+    maximizable: true,
+    closable: true,
     alwaysOnTop: true,
     skipTaskbar: true,
     autoHideMenuBar: true,
+    hiddenInMissionControl: false,
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       sandbox: false,
@@ -186,10 +198,26 @@ function createWindow() {
   });
   mainWindow.setContentProtection(true);
   mainWindow.setSkipTaskbar(true);
-  mainWindow.setAlwaysOnTop(true, "screen-saver");
+  const forceOverlay = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.setAlwaysOnTop(true, "screen-saver", 1);
+    if (process.platform === "darwin") {
+      mainWindow.setVisibleOnAllWorkspaces(true, {
+        visibleOnFullScreen: true,
+        skipTransformProcessType: true
+      });
+      mainWindow.setFullScreenable(false);
+    }
+    console.log("[window] FORCE overlay re-applied (screen-saver + visibleOnFullScreen)");
+  };
   mainWindow.on("ready-to-show", () => {
     mainWindow?.show();
+    forceOverlay();
   });
+  mainWindow.on("show", forceOverlay);
+  mainWindow.on("focus", forceOverlay);
+  mainWindow.on("blur", forceOverlay);
+  mainWindow.on("restore", forceOverlay);
   mainWindow.webContents.on("before-input-event", (_event, input) => {
     if (input.key === "F12" && input.type === "keyDown") {
       _event.preventDefault();

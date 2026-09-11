@@ -18,17 +18,21 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
  * through the rest when one is rate-limited (:free tiers are throttled).
  */
 export const MODEL_CHAIN = [
-  'minimax/minimax-m2.7:free', // verified working - strongest free generalist
-  'google/gemma-4-31b-it:free', // good quality; often recovers from 429
+  'google/gemini-2.0-flash-exp:free', // priority 1: fastest free generalist
+  'qwen/qwen-2.5-coder-32b-instruct:free', // priority 2: strong technical answers
+  'meta-llama/llama-3.3-70b-instruct:free', // priority 3: high-quality reasoning
+  'deepseek/deepseek-r1:free', // priority 4: deep reasoning fallback
+  'minimax/minimax-m2.7:free', // verified working generalist
+  'google/gemma-4-31b-it:free', // recovers well from 429s
   'nvidia/nemotron-3-super-120b-a12b:free' // fastest verified responder
 ]
 
-const MODEL = MODEL_CHAIN[0]
-
-export const SYSTEM_PROMPT = `You are the ultimate interview assistant. Using the dynamically retrieved Resume and Job Description context, answer the interviewer's question perfectly. Format your response EXACTLY like this and be concise:
-1. Define First: [Clear, concise definition or direct answer to the question]
-2. Why it matters: [Explain the business impact, value, or importance in the context of the job description]
-3. Example: [Provide a specific, actionable example, ideally mapping to the candidate's past experience]`
+export const SYSTEM_PROMPT = `You are an elite live technical interview co-pilot. Respond instantly.
+Analyze the full intent of the question before answering. Base your answer on the candidate's resume and background where relevant, expanding on their experience.
+STRUCTURE EVERY RESPONSE STRICTLY AS:
+1. **Define**: Concise 1-2 sentence core definition or direct answer to the question.
+2. **Why it Matters**: 2-3 key technical points on production impact, performance, or engineering trade-offs.
+3. **Example**: A short, highly realistic code or architecture snippet/example.`
 
 // ------------------------------------------------------------
 // Lightweight local RAG: chunk resume/JD into passages and rank
@@ -135,6 +139,7 @@ function isRotatable(status?: number): boolean {
 async function attemptStream(
   apiKey: string,
   userContent: string,
+  model: string,
   callbacks: StreamCallbacks,
   signal?: AbortSignal
 ): Promise<AttemptResult> {
@@ -150,7 +155,7 @@ async function attemptStream(
         'X-Title': 'AI Interview Assistant'
       },
       body: JSON.stringify({
-        model: MODEL,
+        model,
         models: MODEL_CHAIN, // automatic fallback when a :free model is rate-limited
         stream: true,
         messages: [
@@ -256,21 +261,38 @@ ${question}`
 ${question}`
 
   let lastMessage = ''
+  const attempts: string[] = []
 
   for (let i = 0; i < apiKeys.length; i++) {
     if (signal?.aborted) return
-    const result = await attemptStream(apiKeys[i], userContent, callbacks, signal)
+    for (const model of MODEL_CHAIN) {
+      if (signal?.aborted) return
+      const startedAt = performance.now()
+      const result = await attemptStream(apiKeys[i], userContent, model, callbacks, signal)
 
-    if (result.ok || signal?.aborted) return
+      if (result.ok || signal?.aborted) return
 
-    // Only rotate while nothing has been shown to the user yet — otherwise
-    // a mid-stream failure would restart the answer and duplicate text.
-    if (result.emittedChars > 0 || !isRotatable(result.status) || i === apiKeys.length - 1) {
-      callbacks.onError(result.message ?? 'Unknown OpenRouter error.')
-      return
+      const elapsed = Math.round(performance.now() - startedAt)
+      const shortModel = model.split('/')[1] ?? model
+      attempts.push(`key${i + 1}/${shortModel}:${result.status ?? 'net'}:${elapsed}ms`)
+
+      // Only rotate while nothing has been shown to the user yet — otherwise
+      // a mid-stream failure would restart the answer and duplicate text.
+      if (result.emittedChars > 0 || i === apiKeys.length - 1) {
+        callbacks.onError(result.message ?? 'Unknown OpenRouter error.')
+        return
+      }
+      // Auth failures: next key. Rate-limit/model failures: next model.
+      if (!isRotatable(result.status)) {
+        callbacks.onError(result.message ?? 'Unknown OpenRouter error.')
+        return
+      }
+      lastMessage = result.message ?? lastMessage
     }
-    lastMessage = result.message ?? lastMessage
   }
 
-  callbacks.onError(`All ${apiKeys.length} OpenRouter keys failed. Last error: ${lastMessage}`)
+  console.warn(`[OpenRouter] failover exhausted: ${attempts.join(' -> ')}`)
+  callbacks.onError(
+    `All ${apiKeys.length} OpenRouter keys x ${MODEL_CHAIN.length} models failed. Last error: ${lastMessage}`
+  )
 }

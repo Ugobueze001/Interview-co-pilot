@@ -12695,7 +12695,7 @@ function validateDeepgramKey(key) {
 }
 function createDeepgramStream(apiKey, options) {
   const key = sanitizeDeepgramKey(apiKey);
-  const url = "wss://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&interim_results=true&endpointing=600&encoding=linear16&sample_rate=16000&channels=1";
+  const url = "wss://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&interim_results=true&utterance_end_ms=1800&vad_events=true&endpointing=600&encoding=linear16&sample_rate=16000&channels=1";
   let handshakeSucceeded = false;
   const ws = new WebSocket(url, ["token", key]);
   ws.onopen = () => {
@@ -12705,11 +12705,15 @@ function createDeepgramStream(apiKey, options) {
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
+      if (data.type === "UtteranceEnd") {
+        options.onUtteranceEnd?.();
+        return;
+      }
       if (data.type === "Results") {
         const transcript = data.channel?.alternatives?.[0]?.transcript?.trim() ?? "";
         if (!transcript) return;
         if (data.is_final) {
-          options.onFinal(transcript);
+          options.onFinal(transcript, { speechFinal: data.speech_final === true });
         } else {
           options.onInterim?.(transcript);
         }
@@ -12761,6 +12765,44 @@ function float32ToInt16(float32) {
   }
   return int16;
 }
+const SILENCE_COMMIT_MS = 1800;
+function createUtteranceGate(commit) {
+  let buffer = "";
+  let timer = null;
+  const flush = (reason) => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    const text = buffer.trim();
+    buffer = "";
+    if (!text) return;
+    console.log(`[Audio] utterance committed (${reason}): "${text.slice(0, 120)}"`);
+    commit(text);
+  };
+  const rearm = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => flush("silence-timeout"), SILENCE_COMMIT_MS);
+  };
+  return {
+    onFinalSegment: (text, speechFinal) => {
+      buffer = buffer ? `${buffer} ${text}` : text;
+      if (speechFinal) {
+        flush("speech-final");
+      } else {
+        rearm();
+      }
+    },
+    onUtteranceEnd: () => {
+      flush("utterance-end");
+    },
+    dispose: () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      buffer = "";
+    }
+  };
+}
 function describeTracks(stream, label) {
   if (!stream) {
     console.log(`[Audio] ${label}: <no stream>`);
@@ -12780,7 +12822,13 @@ function startChannelPipeline(mediaStream, apiKey, onInterim, onFinal) {
   const audioContext = new AudioContext({ sampleRate: 16e3 });
   const source = audioContext.createMediaStreamSource(mediaStream);
   const processor = audioContext.createScriptProcessor(4096, 1, 1);
-  const stream = createDeepgramStream(apiKey, { onInterim, onFinal, onError: (err) => useAppStore.getState().setSttError(err) });
+  const gate = createUtteranceGate(onFinal);
+  const stream = createDeepgramStream(apiKey, {
+    onInterim,
+    onFinal: (text, meta) => gate.onFinalSegment(text, meta?.speechFinal === true),
+    onUtteranceEnd: () => gate.onUtteranceEnd(),
+    onError: (err) => useAppStore.getState().setSttError(err)
+  });
   let firstFrameLogged = false;
   processor.onaudioprocess = (e) => {
     const input = e.inputBuffer.getChannelData(0);
@@ -12800,11 +12848,12 @@ function startChannelPipeline(mediaStream, apiKey, onInterim, onFinal) {
   source.connect(processor);
   processor.connect(silence);
   silence.connect(audioContext.destination);
-  return { audioContext, processor, source, stream };
+  return { audioContext, processor, source, stream, gate };
 }
 function stopChannelPipeline(pipeline) {
   if (!pipeline) return;
   try {
+    pipeline.gate.dispose();
     pipeline.stream.close();
     pipeline.processor.disconnect();
     pipeline.source.disconnect();
@@ -12968,18 +13017,27 @@ function useDualAudio() {
 }
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL_CHAIN = [
+  "google/gemini-2.0-flash-exp:free",
+  // priority 1: fastest free generalist
+  "qwen/qwen-2.5-coder-32b-instruct:free",
+  // priority 2: strong technical answers
+  "meta-llama/llama-3.3-70b-instruct:free",
+  // priority 3: high-quality reasoning
+  "deepseek/deepseek-r1:free",
+  // priority 4: deep reasoning fallback
   "minimax/minimax-m2.7:free",
-  // verified working - strongest free generalist
+  // verified working generalist
   "google/gemma-4-31b-it:free",
-  // good quality; often recovers from 429
+  // recovers well from 429s
   "nvidia/nemotron-3-super-120b-a12b:free"
   // fastest verified responder
 ];
-const MODEL = MODEL_CHAIN[0];
-const SYSTEM_PROMPT = `You are the ultimate interview assistant. Using the dynamically retrieved Resume and Job Description context, answer the interviewer's question perfectly. Format your response EXACTLY like this and be concise:
-1. Define First: [Clear, concise definition or direct answer to the question]
-2. Why it matters: [Explain the business impact, value, or importance in the context of the job description]
-3. Example: [Provide a specific, actionable example, ideally mapping to the candidate's past experience]`;
+const SYSTEM_PROMPT = `You are an elite live technical interview co-pilot. Respond instantly.
+Analyze the full intent of the question before answering. Base your answer on the candidate's resume and background where relevant, expanding on their experience.
+STRUCTURE EVERY RESPONSE STRICTLY AS:
+1. **Define**: Concise 1-2 sentence core definition or direct answer to the question.
+2. **Why it Matters**: 2-3 key technical points on production impact, performance, or engineering trade-offs.
+3. **Example**: A short, highly realistic code or architecture snippet/example.`;
 function tokenize(text) {
   return text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((t) => t.length > 2);
 }
@@ -13034,7 +13092,7 @@ function getOrderedApiKeys() {
 function isRotatable(status) {
   return status === 401 || status === 402 || status === 429 || status !== void 0 && status >= 500;
 }
-async function attemptStream(apiKey, userContent, callbacks, signal) {
+async function attemptStream(apiKey, userContent, model, callbacks, signal) {
   let emittedChars = 0;
   try {
     const response = await fetch(OPENROUTER_URL, {
@@ -13047,7 +13105,7 @@ async function attemptStream(apiKey, userContent, callbacks, signal) {
         "X-Title": "AI Interview Assistant"
       },
       body: JSON.stringify({
-        model: MODEL,
+        model,
         models: MODEL_CHAIN,
         // automatic fallback when a :free model is rate-limited
         stream: true,
@@ -13128,17 +13186,32 @@ INTERVIEWER'S QUESTION:
 ${question}` : `INTERVIEWER'S QUESTION:
 ${question}`;
   let lastMessage = "";
+  const attempts = [];
   for (let i = 0; i < apiKeys.length; i++) {
     if (signal?.aborted) return;
-    const result = await attemptStream(apiKeys[i], userContent, callbacks, signal);
-    if (result.ok || signal?.aborted) return;
-    if (result.emittedChars > 0 || !isRotatable(result.status) || i === apiKeys.length - 1) {
-      callbacks.onError(result.message ?? "Unknown OpenRouter error.");
-      return;
+    for (const model of MODEL_CHAIN) {
+      if (signal?.aborted) return;
+      const startedAt = performance.now();
+      const result = await attemptStream(apiKeys[i], userContent, model, callbacks, signal);
+      if (result.ok || signal?.aborted) return;
+      const elapsed = Math.round(performance.now() - startedAt);
+      const shortModel = model.split("/")[1] ?? model;
+      attempts.push(`key${i + 1}/${shortModel}:${result.status ?? "net"}:${elapsed}ms`);
+      if (result.emittedChars > 0 || i === apiKeys.length - 1) {
+        callbacks.onError(result.message ?? "Unknown OpenRouter error.");
+        return;
+      }
+      if (!isRotatable(result.status)) {
+        callbacks.onError(result.message ?? "Unknown OpenRouter error.");
+        return;
+      }
+      lastMessage = result.message ?? lastMessage;
     }
-    lastMessage = result.message ?? lastMessage;
   }
-  callbacks.onError(`All ${apiKeys.length} OpenRouter keys failed. Last error: ${lastMessage}`);
+  console.warn(`[OpenRouter] failover exhausted: ${attempts.join(" -> ")}`);
+  callbacks.onError(
+    `All ${apiKeys.length} OpenRouter keys x ${MODEL_CHAIN.length} models failed. Last error: ${lastMessage}`
+  );
 }
 function AnswerPanel() {
   const [answer, setAnswer] = reactExports.useState("");

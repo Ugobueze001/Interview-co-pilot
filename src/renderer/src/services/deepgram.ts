@@ -1,16 +1,20 @@
 /**
  * Deepgram real-time streaming STT client.
  *
- * Streams 16kHz linear16 PCM over WebSocket. Deepgram's server-side
- * endpointing (600ms) replaces local Silero VAD for silence detection:
- * a final transcript arrives ~600ms after the speaker stops talking.
+ * Streams 16kHz linear16 PCM over WebSocket. Two-layer end-of-speech logic:
+ *  - 600ms endpointing keeps interim/final segments streaming live;
+ *  - 1800ms utterance_end + the client-side UtteranceGate (see
+ *    hooks/useDualAudio.ts) buffer those segments and only commit a COMPLETE
+ *    utterance — a mid-sentence pause never fires the LLM.
  *
  * Browser/Electron auth uses the WebSocket subprotocol:
  *   new WebSocket(url, ['token', DEEPGRAM_API_KEY])
  */
 export interface DeepgramStreamOptions {
   onInterim?: (text: string) => void
-  onFinal: (text: string) => void
+  onFinal: (text: string, meta?: { speechFinal: boolean }) => void
+  /** Fired when Deepgram detects end-of-utterance (>= utterance_end_ms pause). */
+  onUtteranceEnd?: () => void
   onError?: (error: string) => void
   onOpen?: () => void
   onClose?: () => void
@@ -59,12 +63,18 @@ export function createDeepgramStream(
   options: DeepgramStreamOptions
 ): DeepgramStream {
   const key = sanitizeDeepgramKey(apiKey)
+  // VAD/endpointing: 600ms endpointing keeps interim/final segments streaming
+  // live; 1800ms utterance_end + client-side UtteranceGate ensures the LLM
+  // never fires on mid-sentence pauses (e.g. "...Node.js" [1.2s pause]
+  // "...when using Redis locks?"). Only a full utterance commits.
   const url =
     'wss://api.deepgram.com/v1/listen' +
     '?model=nova-2' +
     '&smart_format=true' +
     '&interim_results=true' +
-    '&endpointing=600' + // 600ms silence -> final transcript (replaces VAD)
+    '&utterance_end_ms=1800' + // utterance pause threshold — utterance_end events
+    '&vad_events=true' + // VAD begin/end events for speaking indicators
+    '&endpointing=600' + // 600ms silence -> is_final transcript on that segment
     '&encoding=linear16' +
     '&sample_rate=16000' +
     '&channels=1'
@@ -86,13 +96,23 @@ export function createDeepgramStream(
           alternatives?: Array<{ transcript?: string }>
         }
         is_final?: boolean
+        speech_final?: boolean
+        from_finalize?: boolean
+      }
+
+      // Utterance end: speaker paused >= utterance_end_ms. This is the
+      // authoritative end-of-question signal — surface it so the utterance
+      // gate can commit the buffered transcript.
+      if (data.type === 'UtteranceEnd') {
+        options.onUtteranceEnd?.()
+        return
       }
 
       if (data.type === 'Results') {
         const transcript = data.channel?.alternatives?.[0]?.transcript?.trim() ?? ''
         if (!transcript) return
         if (data.is_final) {
-          options.onFinal(transcript)
+          options.onFinal(transcript, { speechFinal: data.speech_final === true })
         } else {
           options.onInterim?.(transcript)
         }

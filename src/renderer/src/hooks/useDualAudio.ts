@@ -7,6 +7,74 @@ interface ChannelPipeline {
   processor: ScriptProcessorNode
   source: MediaStreamAudioSourceNode
   stream: DeepgramStream
+  gate: UtteranceGate
+}
+
+// ---------------------------------------------------------------------------
+// Utterance gate — never cut off an incomplete question.
+//
+// Deepgram delivers `is_final` segments quickly (~600ms endpointing) so the
+// transcript stays live, but those segments are fragments of a longer
+// utterance ("How would you handle a race condition in Node.js..." + pause +
+// "...when using Redis locks?"). Committing every fragment to the store would
+// fire the LLM on incomplete questions.
+//
+// The gate buffers final segments and only commits when the question is
+// actually complete:
+//   1. Deepgram `speech_final=true` on a final segment, OR
+//   2. An `UtteranceEnd` event (>= utterance_end_ms pause), OR
+//   3. SILENCE_COMMIT_MS of sustained quiet with no new speech activity.
+// ---------------------------------------------------------------------------
+
+const SILENCE_COMMIT_MS = 1800
+
+interface UtteranceGate {
+  onFinalSegment: (text: string, speechFinal: boolean) => void
+  onUtteranceEnd: () => void
+  dispose: () => void
+}
+
+function createUtteranceGate(commit: (text: string) => void): UtteranceGate {
+  let buffer = ''
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  const flush = (reason: string): void => {
+    if (timer) {
+      clearTimeout(timer)
+      timer = null
+    }
+    const text = buffer.trim()
+    buffer = ''
+    if (!text) return
+    console.log(`[Audio] utterance committed (${reason}): "${text.slice(0, 120)}"`);
+    commit(text)
+  }
+
+  const rearm = (): void => {
+    if (timer) clearTimeout(timer)
+    // Last resort: if neither speech_final nor UtteranceEnd arrives (e.g. a
+    // provider quirk), commit after sustained silence anyway.
+    timer = setTimeout(() => flush('silence-timeout'), SILENCE_COMMIT_MS)
+  }
+
+  return {
+    onFinalSegment: (text: string, speechFinal: boolean): void => {
+      buffer = buffer ? `${buffer} ${text}` : text
+      if (speechFinal) {
+        flush('speech-final')
+      } else {
+        rearm()
+      }
+    },
+    onUtteranceEnd: (): void => {
+      flush('utterance-end')
+    },
+    dispose: (): void => {
+      if (timer) clearTimeout(timer)
+      timer = null
+      buffer = ''
+    }
+  }
 }
 
 function describeTracks(stream: MediaStream | null | undefined, label: string): void {
@@ -26,7 +94,13 @@ function startChannelPipeline(
   const audioContext = new AudioContext({ sampleRate: 16000 });
   const source = audioContext.createMediaStreamSource(mediaStream);
   const processor = audioContext.createScriptProcessor(4096, 1, 1);
-  const stream = createDeepgramStream(apiKey, { onInterim, onFinal, onError: (err) => useAppStore.getState().setSttError(err) });
+  const gate = createUtteranceGate(onFinal);
+  const stream = createDeepgramStream(apiKey, {
+    onInterim,
+    onFinal: (text, meta) => gate.onFinalSegment(text, meta?.speechFinal === true),
+    onUtteranceEnd: () => gate.onUtteranceEnd(),
+    onError: (err) => useAppStore.getState().setSttError(err)
+  });
   let firstFrameLogged = false;
   processor.onaudioprocess = (e) => {
     const input = e.inputBuffer.getChannelData(0);
@@ -43,12 +117,13 @@ function startChannelPipeline(
   source.connect(processor);
   processor.connect(silence);
   silence.connect(audioContext.destination);
-  return { audioContext, processor, source, stream };
+  return { audioContext, processor, source, stream, gate };
 }
 
 function stopChannelPipeline(pipeline: ChannelPipeline | null): void {
   if (!pipeline) return;
   try {
+    pipeline.gate.dispose();
     pipeline.stream.close();
     pipeline.processor.disconnect();
     pipeline.source.disconnect();

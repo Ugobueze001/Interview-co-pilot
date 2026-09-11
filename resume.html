@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ugochukwu Meshach - Resume</title>
+    <style>
+        @page {
+            size: letter;
+            margin: 0.5in;
+        }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            color: #222;
+            line-height: 1.4;
+            margin: 0;
+            padding: 0;
+            font-size: 10.5pt;
+        }
+        header {
+            text-align: center;
+            border-bottom: 2px solid #222;
+            padding-bottom: 8px;
+            margin-bottom: 12px;
+        }
+        h1 {
+            margin: 0;
+            font-size: 20pt;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+        .contact-info {
+            margin-top: 4px;
+            font-size: 9.5pt;
+        }
+        .contact-info a {
+            color: #0056b3;
+            text-decoration: none;
+        }
+        section {
+            margin-bottom: 12px;
+        }
+        h2 {
+            font-size: 11pt;
+            text-transform: uppercase;
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 2px;
+            margin-top: 0;
+            margin-bottom: 6px;
+            letter-spacing: 0.5px;
+            color: #111;
+        }
+        p {
+            margin: 0 0 6px 0;
+        }
+        ul {
+            margin: 0 0 6px 0;
+            padding-left: 18px;
+        }
+        li {
+            margin-bottom: 3px;
+        }
+        .item-header {
+            display: flex;
+            justify-content: space-between;
+            font-weight: bold;
+            margin-bottom: 2px;
+        }
+        .item-sub {
+            display: flex;
+            justify-content: space-between;
+            font-style: italic;
+            margin-bottom: 4px;
+            font-size: 9.5pt;
+        }
+        .skills-list strong {
+            color: #111;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Ugochukwu Meshach</h1>
+        <div class="contact-info">
+            Lagos, Nigeria | +234 703 998 7705 | ugochukwumeshach5@gmail.com | 
+            <a href="https://ugobuezeweb.vercel.app">Portfolio</a> | 
+            <a href="https://github.com/ugobuez">GitHub</a> | 
+            <a href="https://linkedin.com/in/ugochukwu-meshach-69b830285">LinkedIn</a>
+        </div>
+    </header>
+
+    <section>
+        <h2>Professional Summary</h2>
+        <p>Software Engineer specializing in cross-platform application development with <strong>Electron.js, TypeScript, and Node.js</strong>. Experienced in building performant desktop environments, offline-first background processes, real-time event streaming, and custom IPC (Inter-Process Communication) protocols. Certified in AWS Generative AI, with a proven background designing high-throughput REST APIs, telemetry tracking, and system-level features for remote productivity workflows.</p>
+    </section>
+
+    <section>
+        <h2>Technical Skills</h2>
+        <div class="skills-list">
+            <ul>
+                <li><strong>Desktop & Core:</strong> Electron.js, TypeScript, JavaScript (ES6+), Node.js, IPC Communication, Native OS APIs (IPC Main/Renderer)</li>
+                <li><strong>Frontend:</strong> React, Next.js, HTML5, CSS3, Tailwind CSS, Responsive UI Design</li>
+                <li><strong>Backend & Systems:</strong> Node.js, Express.js, REST APIs, System Hooks, Event Streams, Data Pipelines, JWT Auth</li>
+                <li><strong>Database & Sync:</strong> MongoDB, Mongoose, Data Modeling, Query Optimization, Offline-First Background Sync</li>
+                <li><strong>DevOps & Cloud:</strong> Docker, GitHub Actions, AWS (Generative AI Certified), CI/CD Pipelines, Vercel, Railway</li>
+            </ul>
+        </div>
+    </section>
+
+    <section>
+        <h2>Featured Projects</h2>
+
+        <div class="item-header">
+            <span>Mock Interview Assistant (AI Copilot)</span>
+            <span>Electron.js, TypeScript, Node.js, REST APIs</span>
+        </div>
+        <ul>
+            <li>Architected a cross-platform desktop application using <strong>Electron.js</strong>, <strong>TypeScript</strong>, and <strong>Node.js</strong> featuring custom IPC handlers for secure multi-window background operations.</li>
+            <li>Implemented real-time system signal capture and background audio processing pipelines with low memory overhead.</li>
+            <li>Engineered an offline-first telemetry stream with local state management and automatic retry/sync handlers upon backend reconnection.</li>
+        </ul>
+
+        <div class="item-header">
+            <span>HirePilot – AI-Powered Candidate Dashboard</span>
+            <span>React, TypeScript, Node.js, REST APIs</span>
+        </div>
+        <ul>
+            <li>Designed and built a high-performance candidate dashboard processing and scoring 100+ telemetry-rich job listings per session.</li>
+            <li>Implemented optimized sub-second API routes and data pipelines for real-time background processing.</li>
+        </ul>
+
+        <div class="item-header">
+            <span>ELD Trip Planner – FMCSA Compliance System</span>
+            <span>React, Node.js, Express, MongoDB, Docker</span>
+        </div>
+        <ul>
+            <li>Deployed containerized background service workflows using <strong>Docker</strong> and automated <strong>CI/CD</strong> pipelines.</li>
+            <li>Implemented geospatial tracking algorithms, strict validation rules engines, and background log generators.</li>
+        </ul>
+    </section>
+
+    <section>
+        <h2>Work Experience</h2>
+        <div class="item-header">
+            <span>Software Developer (Internship)</span>
+            <span>Pluralcode Academy / Sage Institute</span>
+        </div>
+        <div class="item-sub">
+            <span>Lagos, Nigeria</span>
+            <span>May 2025 – Oct 2025</span>
+        </div>
+        <ul>
+            <li>Architected automated CI/CD deployment workflows using Vercel and Railway, reducing build times by 60% across environments.</li>
+            <li>Implemented system logging, health check listeners, and error handling for REST APIs, maintaining API health under heavy traffic.</li>
+            <li>Optimized database queries and payload indexing strategies, boosting platform response times by 40%.</li>
+            <li>Built containerized local development workflows using Docker to ensure consistent behavior across operating systems.</li>
+        </ul>
+    </section>
+
+    <section>
+        <h2>Certifications & Simulations</h2>
+        <ul>
+            <li><strong>AWS Certified Generative AI Specialist (AIP-C01)</strong> – Amazon Web Services (2026)</li>
+            <li><strong>Citi ICG Technology Software Development Simulation</strong> – Forage (2026)</li>
+        </ul>
+    </section>
+
+    <section>
+        <h2>Education</h2>
+        <div class="item-header">
+            <span>Full Stack Software Engineering Track</span>
+            <span>Pluralcode Academy / Sage Institute</span>
+        </div>
+        <p><em>Focus: Desktop & Web Architecture, Node.js, TypeScript, API Design, System Security, CI/CD</em></p>
+    </section>
+
+</body>
+</html>
