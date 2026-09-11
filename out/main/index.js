@@ -198,6 +198,25 @@ function createWindow() {
   });
   mainWindow.setContentProtection(true);
   mainWindow.setSkipTaskbar(true);
+  let overlayTimer = null;
+  const startOverlayWatchdog = () => {
+    if (process.platform !== "darwin") return;
+    if (overlayTimer) clearInterval(overlayTimer);
+    overlayTimer = setInterval(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.setAlwaysOnTop(true, "screen-saver", 1);
+      mainWindow.setVisibleOnAllWorkspaces(true, {
+        visibleOnFullScreen: true,
+        skipTransformProcessType: true
+      });
+    }, 1500);
+  };
+  const stopOverlayWatchdog = () => {
+    if (overlayTimer) {
+      clearInterval(overlayTimer);
+      overlayTimer = null;
+    }
+  };
   const forceOverlay = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.setAlwaysOnTop(true, "screen-saver", 1);
@@ -213,11 +232,14 @@ function createWindow() {
   mainWindow.on("ready-to-show", () => {
     mainWindow?.show();
     forceOverlay();
+    startOverlayWatchdog();
   });
   mainWindow.on("show", forceOverlay);
   mainWindow.on("focus", forceOverlay);
   mainWindow.on("blur", forceOverlay);
   mainWindow.on("restore", forceOverlay);
+  mainWindow.on("close", () => stopOverlayWatchdog());
+  mainWindow.on("closed", () => stopOverlayWatchdog());
   mainWindow.webContents.on("before-input-event", (_event, input) => {
     if (input.key === "F12" && input.type === "keyDown") {
       _event.preventDefault();

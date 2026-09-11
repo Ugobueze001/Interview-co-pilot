@@ -443,6 +443,10 @@
     flex-shrink: 0;
   }
 
+  .grow {
+    flex-grow: 1;
+  }
+
   .animate-pulse {
     animation: var(--animate-pulse);
   }

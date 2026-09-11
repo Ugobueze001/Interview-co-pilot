@@ -98,6 +98,32 @@ function createWindow(): void {
   mainWindow.setContentProtection(true)
   mainWindow.setSkipTaskbar(true)
 
+  // macOS overlay watchdog: Mission Control / fullscreen Spaces can drop a
+  // floating panel's window level or 'visibleOnAllWorkspaces' affinity at
+  // arbitrary times (Space switches, app enters REAL fullscreen, 'show'
+  // transitions). Re-asserting the strongest documented configuration on a
+  // short cadence keeps the overlay pinned above the fullscreen app. Cheap,
+  // idempotent, macOS-only, and cleared on window close.
+  let overlayTimer: ReturnType<typeof setInterval> | null = null
+  const startOverlayWatchdog = (): void => {
+    if (process.platform !== 'darwin') return
+    if (overlayTimer) clearInterval(overlayTimer)
+    overlayTimer = setInterval(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      mainWindow.setAlwaysOnTop(true, 'screen-saver', 1)
+      mainWindow.setVisibleOnAllWorkspaces(true, {
+        visibleOnFullScreen: true,
+        skipTransformProcessType: true
+      })
+    }, 1500)
+  }
+  const stopOverlayWatchdog = (): void => {
+    if (overlayTimer) {
+      clearInterval(overlayTimer)
+      overlayTimer = null
+    }
+  }
+
   const forceOverlay = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return
     mainWindow.setAlwaysOnTop(true, 'screen-saver', 1)
@@ -114,11 +140,14 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
     forceOverlay()
+    startOverlayWatchdog()
   })
   mainWindow.on('show', forceOverlay)
   mainWindow.on('focus', forceOverlay)
   mainWindow.on('blur', forceOverlay)
   mainWindow.on('restore', forceOverlay)
+  mainWindow.on('close', () => stopOverlayWatchdog())
+  mainWindow.on('closed', () => stopOverlayWatchdog())
 
   mainWindow.webContents.on('before-input-event', (_event, input) => {
     if (input.key === 'F12' && input.type === 'keyDown') {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { createDeepgramStream, float32ToInt16, validateDeepgramKey, type DeepgramStream } from '../services/deepgram'
+import { clearInterviewSession } from '../services/openrouter'
 import { useAppStore } from '../store/useAppStore'
 
 interface ChannelPipeline {
@@ -188,6 +189,9 @@ export function useDualAudio(): { startListening: () => Promise<void>; stopListe
       console.log('[Audio] startListening: already listening, skipping');
       return;
     }
+
+    // New interview session -> fresh conversational memory.
+    clearInterviewSession();
     
     isStartingRef.current = true;
     console.log('[Audio] startListening: acquiring lock');
