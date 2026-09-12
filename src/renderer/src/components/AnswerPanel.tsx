@@ -22,12 +22,22 @@ export default function AnswerPanel(): React.JSX.Element {
     return () => window.removeEventListener('interviewer-question', handler)
   }, [])
 
+  // Listen for screenshot-capture events (from the "Capture Screen" button)
+  useEffect(() => {
+    const handler = (e: Event): void => {
+      const { imageUrl, prompt } = (e as CustomEvent<{ imageUrl: string; prompt: string }>).detail
+      void generateAnswer(prompt, imageUrl)
+    }
+    window.addEventListener('screenshot-question', handler)
+    return () => window.removeEventListener('screenshot-question', handler)
+  }, [])
+
   // Auto-scroll as tokens arrive
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [answer])
 
-  const generateAnswer = async (question: string): Promise<void> => {
+  const generateAnswer = async (question: string, imageUrl?: string): Promise<void> => {
     abortRef.current?.abort()
     abortRef.current = new AbortController()
     setAnswer('')
@@ -44,7 +54,8 @@ export default function AnswerPanel(): React.JSX.Element {
           setStreaming(false)
         }
       },
-      abortRef.current.signal
+      abortRef.current.signal,
+      imageUrl
     )
   }
 

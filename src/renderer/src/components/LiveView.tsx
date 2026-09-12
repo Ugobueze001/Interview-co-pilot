@@ -13,6 +13,7 @@ export default function LiveView(): React.JSX.Element {
 
   const [manualQuestion, setManualQuestion] = useState('')
   const [deepgramReady, setDeepgramReady] = useState<boolean | null>(null)
+  const [capturing, setCapturing] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -33,6 +34,77 @@ export default function LiveView(): React.JSX.Element {
     setManualQuestion('')
   }
 
+  /**
+   * Capture the entire screen, convert to a base64 PNG, and send it to the
+   * AI with a prompt asking it to analyze/answer whatever is on screen.
+   * Uses getDisplayMedia — the main process auto-grants the primary display
+   * (no picker dialog) via setDisplayMediaRequestHandler.
+   */
+  const captureScreen = async (): Promise<void> => {
+    if (capturing) return
+    setCapturing(true)
+    let stream: MediaStream | null = null
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 1 } as MediaTrackConstraints,
+        audio: false
+      })
+
+      // Grab one frame from the video stream
+      const track = stream.getVideoTracks()[0]
+      if (!track) {
+        console.warn('[Capture] no video track available')
+        return
+      }
+
+      const video = document.createElement('video')
+      video.srcObject = stream
+      video.muted = true
+      await video.play()
+
+      // Wait a tick so the video element has valid dimensions
+      await new Promise((r) => setTimeout(r, 200))
+
+      const canvas = document.createElement('canvas')
+      canvas.width = video.videoWidth || 1280
+      canvas.height = video.videoHeight || 720
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        console.warn('[Capture] could not get 2d context')
+        return
+      }
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+      // Stop all tracks immediately so the screen-share indicator disappears
+      stream.getTracks().forEach((t) => t.stop())
+
+      // Convert to base64 PNG (data URL)
+      const imageUrl = canvas.toDataURL('image/png')
+
+      // Log the capture in the transcript panel
+      useAppStore.getState().addTranscript('interviewer', '[📸 Screenshot captured — sending to AI...]')
+
+      // Dispatch the screenshot event that AnswerPanel listens for
+      window.dispatchEvent(
+        new CustomEvent<{ imageUrl: string; prompt: string }>('screenshot-question', {
+          detail: {
+            imageUrl,
+            prompt:
+              'I am sharing a screenshot of my screen during a technical interview. Please analyze the image carefully and provide a detailed, structured answer to whatever question, problem, or code you see. Use the format: 1. **Define** 2. **Why it Matters** 3. **Example**. Be concise and precise.'
+          }
+        })
+      )
+    } catch (err) {
+      console.warn('[Capture] screen capture failed or was cancelled:', err)
+      useAppStore
+        .getState()
+        .addTranscript('interviewer', '[📸 Screen capture cancelled or failed]')
+    } finally {
+      if (stream) stream.getTracks().forEach((t) => t.stop())
+      setCapturing(false)
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       {/* Control bar */}
@@ -47,6 +119,18 @@ export default function LiveView(): React.JSX.Element {
             }`}
           >
             {listening ? '■ Stop Listening' : '● Start Listening'}
+          </button>
+          <button
+            onClick={() => void captureScreen()}
+            disabled={capturing}
+            className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+              capturing
+                ? 'bg-amber-600/50 text-amber-200 cursor-wait'
+                : 'bg-violet-600 text-white hover:bg-violet-500'
+            }`}
+            title="Capture the entire screen and send it to the AI for an answer"
+          >
+            {capturing ? '⏳ Capturing…' : '📸 Capture Screen'}
           </button>
           <span
             className={`h-2 w-2 rounded-full ${

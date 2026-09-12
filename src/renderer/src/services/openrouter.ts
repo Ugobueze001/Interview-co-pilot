@@ -23,11 +23,13 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
  */
 export const MODEL_CHAIN = [
   // Verified live on OpenRouter's public catalog (2026-09): all $0/1M tokens.
-  // `openrouter/free` is the wildcard routing fallback and stays last.
-  'nvidia/nemotron-3-super-120b-a12b:free',
-  'cohere/north-mini-code:free',
-  'google/gemma-4-26b-a4b-it:free',
-  'openrouter/free'
+  // Ordered fastest-first; vision-capable models lead so screenshot questions
+  // work out of the box. `openrouter/free` is the wildcard fallback (last).
+  'inclusionai/ling-3.0-flash-vl:free',   // fastest flash model, text+image+video->text
+  'nex-agi/nex-n2.5-mini:free',           // mini speed, text+image->text
+  'google/gemma-4-31b-it:free',           // vision, text+image+video->text
+  'thinkingmachines/inkling-small:free',  // vision+audio, text+image+audio->text
+  'openrouter/free'                        // wildcard routing fallback (always last)
 ]
 
 export const SYSTEM_PROMPT = `You are an elite live technical interview co-pilot. Respond instantly.
@@ -47,9 +49,16 @@ Analyze the full intent of the question before providing the answer it should be
 // as an isolated sentence.
 // ------------------------------------------------------------
 
+/** One content block in a multimodal message (OpenAI-compatible vision format). */
+export interface ContentPart {
+  type: 'text' | 'image_url'
+  text?: string
+  image_url?: { url: string }
+}
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
-  content: string
+  content: string | ContentPart[]
 }
 
 /** In-memory conversation log for the active interview session. */
@@ -114,19 +123,34 @@ function buildSystemPrompt(profile: CandidateProfile | null): string {
 /**
  * Assemble the full payload: system context + sliding conversation window +
  * the new question (with per-question RAG context when available).
+ *
+ * When `imageUrl` is supplied (e.g. a screenshot from the "Capture Screen"
+ * button), the user message becomes a multimodal content array with the
+ * image attached — OpenRouter routes to a vision-capable free model.
  */
 function buildRequestMessages(
   profile: CandidateProfile | null,
   ragContext: string,
-  question: string
+  question: string,
+  imageUrl?: string
 ): ChatMessage[] {
-  const user = ragContext
+  const userText = ragContext
     ? `CONTEXT (retrieved from candidate data):\n${ragContext}\n\nINTERVIEWER'S QUESTION:\n${question}`
     : `INTERVIEWER'S QUESTION:\n${question}`
+
+  // When an image is present, use the OpenAI-compatible content array format
+  // so the model receives both the screenshot and the question text.
+  const userContent: string | ContentPart[] = imageUrl
+    ? [
+        { type: 'text', text: userText },
+        { type: 'image_url', image_url: { url: imageUrl } }
+      ]
+    : userText
+
   return [
     { role: 'system', content: buildSystemPrompt(profile) },
     ...conversationHistory.slice(-MAX_HISTORY_MESSAGES),
-    { role: 'user', content: user }
+    { role: 'user', content: userContent }
   ]
 }
 
@@ -452,7 +476,10 @@ async function attemptStream(
       },
       body: JSON.stringify({
         model,
-        models: getCandidateModels().slice(0, 3), // native auto-fallback (OpenRouter caps at 3)
+        // NOTE: do NOT send `models:` alongside `model:` — OpenRouter treats
+        // them as mutually exclusive and rejects the request with a 400 if both
+        // are present. Failover across candidate models is handled by the
+        // manual retry loop in streamAnswer(), not by native auto-fallback.
         stream: true,
         max_tokens: 350,
         temperature: 0.2,
@@ -538,7 +565,8 @@ async function attemptStream(
 export async function streamAnswer(
   question: string,
   callbacks: StreamCallbacks,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  imageUrl?: string
 ): Promise<void> {
   const store = useAppStore.getState()
   const profile = store.profile
@@ -556,12 +584,21 @@ export async function streamAnswer(
   void discoverAndBenchmarkModels()
 
   const ragContext = profile ? retrieveContext(question, profile) : ''
-  const messages = buildRequestMessages(profile, ragContext, question)
+  const messages = buildRequestMessages(profile, ragContext, question, imageUrl)
 
   let lastMessage = ''
   const attempts: string[] = []
 
-  const candidates = getCandidateModels()
+  // When an image is attached, prefer vision-capable models first so we don't
+  // waste a round-trip on a text-only model that will 400 the image payload.
+  const allCandidates = getCandidateModels()
+  const candidates = imageUrl
+    ? [...allCandidates].sort((a, b) => {
+        const aVision = isVisionModel(a) ? 0 : 1
+        const bVision = isVisionModel(b) ? 0 : 1
+        return aVision - bVision
+      })
+    : allCandidates
 
   for (let i = 0; i < apiKeys.length; i++) {
     if (signal?.aborted) return
@@ -595,7 +632,10 @@ export async function streamAnswer(
         return
       }
       // Auth failures: next key. Rate-limit/model failures: next model.
-      if (!isRotatable(result.status)) {
+      // When an image is present, also treat 400 as rotatable — it means the
+      // model doesn't support vision, so we try the next (vision-capable) one.
+      const rotatable = isRotatable(result.status) || (imageUrl && result.status === 400)
+      if (!rotatable) {
         callbacks.onError(result.message ?? 'Unknown OpenRouter error.')
         return
       }
@@ -607,4 +647,28 @@ export async function streamAnswer(
   callbacks.onError(
     `All ${apiKeys.length} OpenRouter keys x ${candidates.length} models failed. Last error: ${lastMessage}`
   )
+}
+
+/**
+ * Heuristic: detect whether a model id is likely vision-capable based on
+ * known patterns. Used to prioritize vision models when a screenshot is sent.
+ */
+function isVisionModel(modelId: string): boolean {
+  const m = modelId.toLowerCase()
+  // Known vision-capable free models (verified against live catalog)
+  const visionPatterns = [
+    'ling-3.0-flash-vl',
+    'nex-n2.5-mini',
+    'nex-n2.5-pro',
+    'gemma-4-31b',
+    'gemma-4-26b',
+    'inkling-small',
+    'inkling',
+    'dots-3-note',
+    'nemotron-3-nano-omni',
+    'nemotron-3.5-content-safety',
+    'lyria-3',
+    'openrouter/free' // wildcard routes to vision-capable free models
+  ]
+  return visionPatterns.some((p) => m.includes(p))
 }
